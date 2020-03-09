@@ -30,6 +30,75 @@ redis的线程模型
 
 
 
+#### redis有哪些数据类型，哪些场景使用比较合适
+
+​	string、hash(map)：主要存储对象等、list：列表还可以通过lrange进行简单的分页、set：无序集合，自动去重、sorted set：排序队列
+
+
+
+#### redis过期策略是什么？手写LRU
+
+redis怎么对过期key删除的：定期删除+惰性删除。
+
+如果惰性删除，漏掉多个过期key堆积，内存占用越来越大采用内存淘汰机制来删除。
+
+内存淘汰：
+
+​	redis的一些策略：最近最少使用、随机删除等
+
+
+
+#### redis怎么保证高可用高并发
+
+**redis如何通过读写分离来承载超10w+的QPS**
+
+* 凡是支持高并发的架构，redis是不够的，但是redis是很重要的一个环节。首先是底层缓存能够支持我们说的那种高并发，其次再经过良好的整体的缓存架构的设计(多级缓存架构、热点缓存)。
+* redis不能支持高并发的瓶颈在哪儿？ 单机redis(单机redis的QPS<5W)
+* 如果redis要求超过QPS 10W+ 那应该怎么做？  读写分离，缓存一般用来支持读高并发，写的请求比较少，大量的都是读，一秒钟二十万读。采用主从架构，主master负载写，并且将数据同步到slave ，从salve就负责读，追求更高的QPS的话，那么增加响应的slave主机即可。
+
+![1583725275337](markdownImage/1583725275337.png)
+
+> 读写分离有个好处： 可以实现水平扩展
+
+
+
+**redis replication**
+
+replication：主从复制
+
+redis主从架构 -> 读写分离架构 -> 可支持水平扩展的读高并发
+
+核心机制：
+
+* redis采用异步方式复制数据到slave节点，从redis2.8开始，slave node会周期性的确认自己每次复制的数据量。
+* 一个master node 可以配置多个slave node
+* slave node 也可以连接其他的 slave node
+* slave node 做复制的时候，是不会阻塞的block，master node 会正常工作
+* slave node 在做复制的时候，也不会block对自己的查询操作，它仍会用旧的数据提供服务，复制完成后需要删除旧数据，加载新数据，这个时候暂停对外服务
+* slave node主要用来进行横向扩容，读读写分离，扩容slave node提高读的吞吐量。
+
+master持久化对于主从架构的安全保障意义
+
+​	采用主从架构，建议开启master node 的持久化
+
+​	如果master宕机，重启，没得本地数据，然后主从复制，salve node的数据也会丢失 100%丢失
+
+即使采用后续讲解的高可用机制，slave node 可以自动接管 master node，但是也可能sentinal没有检测到 master，master 就自动重启，也会导致数据清空，数据丢失。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
