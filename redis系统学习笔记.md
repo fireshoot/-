@@ -1,3 +1,7 @@
+
+
+
+
 面试题：
 
 * 在项目中缓存是如何使用的？缓存使用不当会造成什么后果？(那些地方用，为什么要用，不用行不行？用了后以后可能有什么不好的后果)。
@@ -84,6 +88,183 @@ master持久化对于主从架构的安全保障意义
 ​	如果master宕机，重启，没得本地数据，然后主从复制，salve node的数据也会丢失 100%丢失
 
 即使采用后续讲解的高可用机制，slave node 可以自动接管 master node，但是也可能sentinal没有检测到 master，master 就自动重启，也会导致数据清空，数据丢失。
+
+
+
+**主从架构核心原理**
+
+​	当启动一个slave node的时候，他会发送一个PSYNC命令给master node，然后开始full resynchronization 的时候，master后台启动一个线程，生成一个RDB快照文件，同时还会将从客户端收到的所有写命令继续缓存在内存中，RDB文件生成完成后，master会将这个RDB发送给slave，slave会先写入本地磁盘，然后再从本地磁盘加载到内存中，然后master会将内存中缓存的写命令发送给slave，slave也会同步这些数据。 全量复制
+
+> ​	slave node 如果和master node有网络故障，断开了连接，会自动重连，master如果发现有多个slave node都来重新连接，仅仅会启动一个 rdb save操作，用一份rdb数据服务前部slave node.
+>
+> ​	如果slave node 重新连接master node，master 仅仅会复制给slave部分缺少的数据。如果第一次连接的话，就会触发 一次 full resynchronization
+
+
+
+**主从复制的断点重传**
+
+​	就是复制过程中，网络连接掉了，可以接着上次复制的地方继续复制下去，而不是从头开始复制一份。
+
+> 断点重传，怎么记录上一次传到哪一个位置？ 肯定是日志
+>
+> ​	master node 会在内存中有一个常见的backlog，master 和slave 都会保存一个replica offset 开始复制，但是如果没有找到对应的offset ，那么会执行一次resynchronization
+
+
+
+
+
+**无磁盘化复制**
+
+​	master在内存直接创建rdb，然后发送给slave，不会自己在本地落地磁盘。
+
+
+
+**过期key处理**
+
+​	slave不会处理过期key，只会等待master过期key，如果master过期了一个key，或者通过LRU淘汰了一个key，那么会模拟一条del命令发送给slave
+
+
+
+****
+
+**复制流程**
+
+![1583806204771](markdownImage/1583806204771.png)
+
+> 1. slave node 首先会保存master node 的相关信息(host、ip)，一般在配置文件中配置的
+> 2. slave的一个定时任务，会检测是否有master需要连接，如果有，就建立连接。
+> 3. 请求master，并且签名校验后建立连接
+> 4. master启动全量复制，将所有的数据，都异步的发送给slave，实现数据同步
+> 5. 当master有新的数据写入的时候，都会异步的向slave同步数据
+
+
+
+**数据同步的核心机制**
+
+第一次slave和master建立连接的时候，会执行全量复制，这个过程的一些机制
+
+1. master 、slave都会维护一个offset。 master、slave都会不断的累加offset，slave每秒都会上报自己的offset给master，同时master会保存每个slave的offset
+2. backlog：master node 有一个日志 backlog，默认1M，每次给slave node复制数据的时候，会将数据在backlog中同步写一份。backlog就是在做全量复制的时候断开后的增量复制。
+3. master run id ： 检测master node 的一个标识，不能用 host+ip的方式定位master node 因为如果master备份，重启的时候，host+ip检测不了数据的变化
+4. psync ： 从节点使用psync从master node 进行复制，psync runid offset ， master node根据自身的响应信息，确定是全量复制还是增量复制。
+
+**全量复制**
+
+​	master 复制一个rdb快照
+
+**增量复制**
+
+​	master全量复制中断后，通过记录backlog的断点重传，就是增量复制
+
+**heartBeat**
+
+​	主从节点通过心跳确定相互之间有没有故障
+
+**异步复制**
+
+​	master每次收到写命令之后，内部写入数据，然后异步发送给slave
+
+
+
+****
+
+#### 哨兵介绍 sentinal
+
+哨兵的功能：
+
+* 集群监控，负责监控redis 的 master 、slave 是否正常工作
+* 消息通知，如果某个redis实例有故障，那么哨兵负责发送消息作为报警通知给管理员
+* 故障转移，如果master node挂掉了，会自动转移到slave node上
+* 配置中心，如果故障转移发生了，通知client客户端新的master地址。
+
+
+
+哨兵本身也是分布式的，作为一个哨兵集群去运行，相互协同工作
+
+* 故障转移的时候，判断一个master node 是否死掉，需要大部分哨兵都同意才行，涉及到分布式选举问题。
+* 即使部分哨兵节点挂掉了，哨兵集群还是能正常工作的。但是要避免单点故障
+
+
+
+哨兵的必要条件
+
+* 哨兵至少需要3个实例，来保证自己的健壮性
+* 哨兵+redis主从部署架构，是不会保证数据零丢失的，只保证redis集群高可用性。
+* 对于哨兵 + redis主从这种复杂的部署架构，尽量在测试环境和生产环境，能进行充足的测试
+
+
+
+为什么redis哨兵集权只有2个节点无法工作
+
+选举算法是大多数运行的时候才同意故障转移，但是如果只是两个的话，一个故障了，只有一个运行，就是1,1并不是大多数，所以无法完成工作。
+
+
+
+****
+
+
+
+**主备切换数据丢失问题**
+
+1. 当master刚写完数据，准备异步复制数据到slave的时候，这个时候master故障，slave被选举成master node了，内存中没有来得及复制的数据就丢失了。
+
+   ![1583809917473](markdownImage/1583809917473.png)
+
+   2. 集群脑裂导致数据丢失的问题，由于网络问题，master和其他slave处于网络分区，相互之间不能相互联系，哨兵集群认为master故障，重新选举新的 master，这个时候有两个master去控制一个功能，就是脑裂。客户端和原来的master进行通讯，写入新数据。网络恢复后，原来的master会被调整成slave，那么原来写入的数据就会丢失。![1583810228914](markdownImage/1583810228914.png)
+
+   > 解决异步复制和脑裂导致的数据丢失
+   >
+   > min-slaves-to-write 1
+   >
+   > min-slave-max-lag 10 : slave复制数据和ack的延时太长，就认为master可能宕机，然后拒绝写请求，把宕机的master的数据损失降低到最小。![1583810729660](markdownImage/1583810729660.png)
+
+
+
+****
+
+
+
+**sdown odown转换机制**
+
+sdown odown两种失败状态
+
+* sdown : 主管宕机，如果一个哨兵如果自己ping master ，ping不通，那么就认为这个master 宕机了
+* odown：客观宕机，如果quorum数量的哨兵都觉得master 宕机了就是客观宕机。
+
+
+
+**哨兵和slave集群的自动发现机制**
+
+​	哨兵互相之间发现，通过redis 的 pub/sub 每个哨兵往 sentinel_:hello发送消息，其他哨兵都会订阅和消费消息来感知其他哨兵的存在，每个哨兵还会跟其他哨兵交换对master的监控配置，相互进行监控配置的同步。
+
+
+
+**slave -> master 选举算法**
+
+如果一个master被认为odown了，并且majority哨兵允许主备切换，为了选举哪一个slave来成为master的条件。
+
+考虑的信息：
+
+* 跟master断开连接的时长
+* slave的优先级
+* 复制 offset
+* run id
+
+会进行的排序
+
+* 按照slave的优先级排序，slave priority 越低，优先级越高
+* 如果slave priority相同，那么看replica offset ,数据复制越多，offset越靠后，优先级就越高
+* 最后看run id，选择比较小的以一个 run id
+
+> 
+
+
+
+
+
+
+
+
 
 
 
