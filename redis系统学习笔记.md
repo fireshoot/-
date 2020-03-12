@@ -321,6 +321,50 @@ AOF
 
 
 
+#### redis集群模式(cluster)的工作原理是什么？ redis 的key是如何寻址的，分布式寻址有哪些算法，了解一致性hash算法吗？
+
+> redis cluster vs replication + sentinal
+>
+> * 如果数据量比较少，主要承载高并发高性能的场景，那就创建 一个 replication就可以了，一个master，多slave，要多少个slave取决于吞吐量的要求，然后自己搭建一个sentinal哨兵集群，来保证redis主从架构的高可用
+> * 如果是针对于 海量数据+高并发+高可用的场景 就用redis cluster。多master 多slave，就不用application
+
+
+
+**一致性hash算法 + redis cluster 的hash slot**
+
+
+
+​	用不同的算法，就决定了在多个master节点的时候，数据如何分布到这些节点上去，主要是解决这个问题。
+
+> 最老土的hash算法和弊端：
+>
+> ​		大量的缓存重建
+>
+> 一致性hash算法：
+>
+> ​		自动缓存迁移+虚拟节点(负载均衡)
+>
+> redis cluster 的hash slot算法：
+>
+> ​		 redis cluster 有固定的16379个hash slot,对每个key计算CRC16值，然后对16379取模，可以获取到key对应hash slot 。
+>
+> ​		redis cluster中每个master都有部分slot ,比如有3个master,那么可能每个master持有5000多个hash slot。hash slot 让node的增加和移除非常简单，增加一个master，就将其他master的hash slot移动部分过去，减少一个master，就将它的hash slot 移动到其他master上去。
+>
+> ​	移动hash slot 的成本非常低
+>
+> ​	客户端的api，可以指定的数据，让他们走指定的hash slot
+
+
+
+**redis cluster**
+
+* 自动将数据进行分片，每个master上放一部分数据
+* 提供内置的高可用支持，部分master不可用时，还可以继续工作
+
+​		在redis cluster架构下，每个redis要开放两个端口号，一个是6379，另外一个就是加10000的端口号，比如16379。16379 端口号是用来进行节点间通信的，也就是cluster bus 的东西，集群总线，cluster bus 的通信，用来进行故障检测，配置更新，故障转移授权。 cluster bus 用了另外一种二进制的协议，主要用于节点间进行高效的数据交换，占用更少的网络带宽和处理时间。
+
+
+
 
 
 
